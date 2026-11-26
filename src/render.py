@@ -9,8 +9,8 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    candidates = [
+def collect_news(config: dict[str, Any], posted: Any) -> list[dict[str, Any]]:
+    candidates = []
         ROOT / "assets/fonts/DejaVuSans.ttf",
         Path("C:/Windows/Fonts/arial.ttf"),
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
