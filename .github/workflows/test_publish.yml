@@ -1,0 +1,134 @@
+name: Test Instagram publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true = только проверить доступ (ничего не публикуется). false = опубликовать тестовую картинку"
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pillow requests
+
+      - name: Check access / publish test image
+        env:
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          IG_API_VERSION: "v23.0"
+        run: |
+          python - <<'PY'
+          import os, sys, time, subprocess
+          import requests
+
+          TOKEN = os.environ["INSTAGRAM_ACCESS_TOKEN"].strip()
+          UID = os.environ["INSTAGRAM_USER_ID"].strip()
+          DRY = os.environ.get("DRY_RUN", "true").lower() != "false"
+          VER = os.environ.get("IG_API_VERSION", "v23.0")
+          H = {"Authorization": "Bearer " + TOKEN}
+
+          def safe(text):
+              return str(text).replace(TOKEN, "***")[:400]
+
+          def fail(msg):
+              print("ОШИБКА:", msg)
+              sys.exit(1)
+
+          # 1. Проверка доступа: пробуем два адреса API
+          base = None
+          for b in ("https://graph.instagram.com", "https://graph.facebook.com"):
+              r = requests.get(f"{b}/{VER}/{UID}", params={"fields": "username"},
+                               headers=H, timeout=30)
+              print(b, "->", r.status_code, safe(r.text))
+              if r.ok:
+                  base = b
+                  print("ДОСТУП ЕСТЬ. Аккаунт:", r.json().get("username"), "| адрес API:", b)
+                  break
+          if not base:
+              fail("токен не подошёл ни к одному адресу. Нужно сгенерировать токен заново.")
+
+          if DRY:
+              print("Режим проверки: ничего не публикуем. Для тестовой публикации запустите с dry_run = false.")
+              sys.exit(0)
+
+          # 2. Тестовая картинка 1080x1350
+          from PIL import Image, ImageDraw, ImageFont
+          os.makedirs("public_test", exist_ok=True)
+          name = f"test_{int(time.time())}.jpg"
+          path = f"public_test/{name}"
+          img = Image.new("RGB", (1080, 1350), (24, 32, 56))
+          d = ImageDraw.Draw(img)
+          try:
+              font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 96)
+          except OSError:
+              font = ImageFont.load_default()
+          d.text((540, 675), "Тест агента", fill=(255, 255, 255), font=font, anchor="mm")
+          img.save(path, "JPEG", quality=92)
+
+          # 3. Публикуем файл в репозитории, чтобы у картинки появилась публичная ссылка
+          subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
+          subprocess.run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"], check=True)
+          subprocess.run(["git", "add", path], check=True)
+          subprocess.run(["git", "commit", "-m", "test image"], check=True)
+          subprocess.run(["git", "push"], check=True)
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          branch = os.environ["GITHUB_REF_NAME"]
+          url = f"https://raw.githubusercontent.com/{repo}/{branch}/{path}"
+          print("Ссылка на картинку:", url)
+
+          ok = False
+          for i in range(12):
+              rr = requests.get(url, timeout=30)
+              if rr.status_code == 200 and rr.headers.get("content-type", "").startswith("image"):
+                  ok = True
+                  break
+              time.sleep(5)
+          if not ok:
+              fail("картинка недоступна по публичной ссылке. Скорее всего, репозиторий приватный: "
+                   "Instagram не сможет её скачать. Нужен публичный репозиторий или другое хранилище.")
+
+          # 4. Контейнер, ожидание, публикация
+          r = requests.post(f"{base}/{VER}/{UID}/media",
+                            data={"image_url": url, "caption": "Тест автоматической публикации"},
+                            headers=H, timeout=60)
+          print("создание контейнера:", r.status_code, safe(r.text))
+          if not r.ok:
+              fail("Instagram не принял картинку (текст ответа выше).")
+          cid = r.json()["id"]
+
+          for i in range(24):
+              s = requests.get(f"{base}/{VER}/{cid}", params={"fields": "status_code"},
+                               headers=H, timeout=30)
+              code = s.json().get("status_code") if s.ok else None
+              print("статус обработки:", code)
+              if code == "FINISHED":
+                  break
+              if code in ("ERROR", "EXPIRED"):
+                  fail("Instagram не смог обработать картинку.")
+              time.sleep(5)
+          else:
+              fail("слишком долгая обработка, попробуйте ещё раз.")
+
+          p = requests.post(f"{base}/{VER}/{UID}/media_publish",
+                            data={"creation_id": cid}, headers=H, timeout=60)
+          print("публикация:", p.status_code, safe(p.text))
+          if not p.ok:
+              fail("публикация не прошла (текст ответа выше).")
+          print("ГОТОВО. Тестовый пост опубликован, id:", p.json().get("id"))
+          PY
