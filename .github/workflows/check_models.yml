@@ -1,0 +1,72 @@
+name: Check Gemini models
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: List models available to the key and test each one
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, json, time, urllib.request, urllib.error
+
+          KEY = os.environ["GEMINI_API_KEY"].strip()
+          BASE = "https://generativelanguage.googleapis.com/v1beta"
+          H = {"x-goog-api-key": KEY, "Content-Type": "application/json"}
+
+          def get(url):
+              req = urllib.request.Request(url, headers=H)
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.loads(r.read().decode())
+
+          names = []
+          url = f"{BASE}/models?pageSize=200"
+          try:
+              while url:
+                  data = get(url)
+                  for m in data.get("models", []):
+                      if "generateContent" in m.get("supportedGenerationMethods", []):
+                          names.append(m["name"].split("/", 1)[1])
+                  tok = data.get("nextPageToken")
+                  url = f"{BASE}/models?pageSize=200&pageToken={tok}" if tok else None
+          except urllib.error.HTTPError as e:
+              print("Не удалось получить список моделей: HTTP", e.code)
+              raise SystemExit(1)
+
+          skip = ("image", "tts", "embedding", "live", "audio", "robotics",
+                  "computer-use", "veo", "imagen", "aqa", "learnlm", "native")
+          cands = [n for n in names
+                   if (n.startswith("gemini-") or n.startswith("gemma-"))
+                   and not any(s in n for s in skip)]
+          print(f"Моделей с generateContent всего: {len(names)}. Проверяю текстовые: {len(cands)}\n")
+
+          body = json.dumps({
+              "contents": [{"parts": [{"text": "Ответь одним словом: ок"}]}],
+              "generationConfig": {"maxOutputTokens": 20},
+          }).encode()
+
+          working = []
+          for n in cands[:25]:
+              req = urllib.request.Request(f"{BASE}/models/{n}:generateContent",
+                                           data=body, headers=H, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=40) as r:
+                      r.read()
+                  status = "РАБОТАЕТ"
+                  working.append(n)
+              except urllib.error.HTTPError as e:
+                  status = f"HTTP {e.code}"
+              except Exception as e:
+                  status = type(e).__name__
+              print(f"{n:45s} {status}")
+              time.sleep(1.5)
+
+          print("\nРАБОТАЮТ СЕЙЧАС:", ", ".join(working) if working else "ни одна")
+          PY
