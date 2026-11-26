@@ -17,8 +17,7 @@ class LLMError(RuntimeError):
 TIMEOUT = 45
 RETRY_CODES = {408, 425, 429, 500, 502, 503, 504}
 DELAYS = (3, 8)  # паузы между попытками на одной модели (секунды)
-DEFAULT_GEMINI_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
-
+DEFAULT_GEMINI_MODELS = ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-3.8-flash"]
 
 def _load_local_env() -> None:
     path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
