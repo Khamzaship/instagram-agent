@@ -9,7 +9,7 @@ import urllib.request
 from typing import Any
 
 API_VERSION = os.getenv("INSTAGRAM_API_VERSION", "v27.0")
-BASE = f"https://graph.instagram.com/{API_VERSION}"
+BASE = f"https://graph.facebook.com/{API_VERSION}"
 
 
 class InstagramError(RuntimeError):
