@@ -16,16 +16,34 @@ class InstagramError(RuntimeError):
     pass
 
 
+def _api_error_text(payload: Any) -> str:
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return "Instagram API вернул ошибку без подробностей"
+    details = [str(error["message"])] if error.get("message") else []
+    for key, label in (("type", "type"), ("code", "code"), ("error_subcode", "subcode"), ("fbtrace_id", "trace")):
+        value = error.get(key)
+        if value is not None:
+            details.append(f"{label}={value}")
+    return "; ".join(details) or "Instagram API вернул ошибку без подробностей"
+
+
 def _post(path: str, values: dict[str, Any], token: str) -> dict[str, Any]:
     body = urllib.parse.urlencode({**values, "access_token": token}).encode()
     req = urllib.request.Request(f"{BASE}/{path.lstrip('/')}", data=body, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
             data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            error_data = json.loads(exc.read().decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            error_data = {}
+        raise InstagramError(f"Ошибка Instagram API: HTTP {exc.code}: {_api_error_text(error_data)}") from exc
     except (urllib.error.URLError, json.JSONDecodeError) as exc:
         raise InstagramError(f"Ошибка Instagram API: {exc}") from exc
     if "error" in data:
-        raise InstagramError(data["error"].get("message", "Instagram API вернул ошибку"))
+        raise InstagramError(_api_error_text(data))
     return data
 
 
