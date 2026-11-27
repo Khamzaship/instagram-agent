@@ -29,8 +29,13 @@ def _api_error_text(payload: Any) -> str:
 
 
 def _post(path: str, values: dict[str, Any], token: str) -> dict[str, Any]:
-    body = urllib.parse.urlencode({**values, "access_token": token}).encode()
-    req = urllib.request.Request(f"{BASE}/{path.lstrip('/')}", data=body, method="POST")
+    body = urllib.parse.urlencode(values).encode()
+    req = urllib.request.Request(
+        f"{BASE}/{path.lstrip('/')}",
+        data=body,
+        headers={"Authorization": f"Bearer {token}"},
+        method="POST",
+    )
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
             data = json.loads(response.read().decode("utf-8"))
@@ -48,8 +53,8 @@ def _post(path: str, values: dict[str, Any], token: str) -> dict[str, Any]:
 
 
 def publish_carousel(paths: list[str], caption: str, pages_url: str) -> str:
-    token = os.getenv("INSTAGRAM_ACCESS_TOKEN")
-    user_id = os.getenv("INSTAGRAM_USER_ID")
+    token = os.getenv("INSTAGRAM_ACCESS_TOKEN", "").strip()
+    user_id = os.getenv("INSTAGRAM_USER_ID", "").strip()
     if not token or not user_id:
         raise InstagramError("Для публикации нужны INSTAGRAM_ACCESS_TOKEN и INSTAGRAM_USER_ID")
     children = []
@@ -61,7 +66,10 @@ def publish_carousel(paths: list[str], caption: str, pages_url: str) -> str:
     creation_id = album["id"]
     for _ in range(12):
         time.sleep(5)
-        req = urllib.request.Request(f"{BASE}/{creation_id}?fields=status_code&access_token={urllib.parse.quote(token)}")
+        req = urllib.request.Request(
+            f"{BASE}/{creation_id}?fields=status_code",
+            headers={"Authorization": f"Bearer {token}"},
+        )
         with urllib.request.urlopen(req, timeout=30) as response:
             status = json.loads(response.read().decode("utf-8")).get("status_code")
         if status == "FINISHED":
