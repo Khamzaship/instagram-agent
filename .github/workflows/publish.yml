@@ -40,7 +40,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
-        run: python run_bot.py --dry-run
+        run: python run_bot.py --dry-run > carousel.json
 
       - name: Verify images were generated
         run: |
@@ -100,13 +100,51 @@ jobs:
           PAGES_BASE_URL: ${{ steps.deployment.outputs.page_url }}
         run: |
           python - <<'PY'
-          import json, os
-          path = "config.json"
-          data = json.load(open(path, encoding="utf-8"))
-          data["pages_base_url"] = os.environ["PAGES_BASE_URL"].rstrip("/")
-          json.dump(data, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+          import datetime
+          import json
+          import os
+          from pathlib import Path
+          from src.instagram import publish_carousel
+
+          base_url = os.environ["PAGES_BASE_URL"].rstrip("/")
+          raw = Path("carousel.json").read_text(encoding="utf-8")
+          decoder = json.JSONDecoder()
+          offset = 0
+          posted_path = Path("state/posted.json")
+          posted = json.loads(posted_path.read_text(encoding="utf-8"))
+          count = 0
+
+          while offset < len(raw):
+              while offset < len(raw) and raw[offset].isspace():
+                  offset += 1
+              if offset >= len(raw):
+                  break
+              entry, offset = decoder.raw_decode(raw, offset)
+              news = entry["news"]
+              carousel = entry["carousel"]
+              caption = f"{carousel['caption']}\n\nИсточник: {news['source']} — {news['link']}"
+              hashtags = " ".join(f"#{tag}" for tag in carousel["hashtags"])
+              if hashtags:
+                  caption += f"\n\n{hashtags}"
+
+              media_id = publish_carousel(entry["files"], caption, base_url)
+              posted.append({
+                  "id": news["id"],
+                  "link": news["link"],
+                  "title": news["title"],
+                  "published_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                  "instagram_media_id": media_id,
+              })
+              print(f"Опубликовано: {news['title']} (Instagram ID {media_id})")
+              count += 1
+
+          if count == 0:
+              raise SystemExit("В carousel.json нет подготовленных каруселей")
+          posted_path.write_text(
+              json.dumps(posted[-500:], ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
           PY
-          python run_bot.py
 
       - name: Save duplicate prevention state
         if: success()
