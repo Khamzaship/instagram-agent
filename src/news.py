@@ -1,120 +1,313 @@
-from future import annotations
+om future import annotations
 
+import hashlib
+import html
+import json
+import logging
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.request import Request, urlopen
-from io import BytesIO
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+import feedparser
 
 ROOT = Path(file).resolve().parents[1]
+log = logging.getLogger(name)
 
-def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-candidates = [
-ROOT / "assets/fonts/DejaVuSans.ttf",
-Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-Path("C:/Windows/Fonts/arial.ttf"),
-]
-for path in candidates:
-if path.exists():
-return ImageFont.truetype(str(path), size=size)
-return ImageFont.load_default()
-
-def _wrap(draw, text, font, width):
-lines = []
-current = ""
-for word in text.split():
-proposed = f"{current} {word}".strip()
-if draw.textbbox((0, 0), proposed, font=font)[2] <= width:
-current = proposed
-else:
-if current:
-lines.append(current)
-current = word
-if current:
-lines.append(current)
-return lines
-
-def _load_photo(url: str | None):
-if not url:
-return None
-try:
-request = Request(
-url,
-headers={"User-Agent": "Mozilla/5.0"}
+def load_config() -> dict[str, Any]:
+return json.loads(
+(ROOT / "config.json").read_text(encoding="utf-8")
 )
-with urlopen(request, timeout=12) as response:
-data = response.read(8_000_000)
-image = Image.open(BytesIO(data)).convert("RGB")
-return image
-except Exception:
+
+def _clean_html(value: str) -> str:
+value = html.unescape(value or "")
+value = re.sub(r"<[^>]+>", " ", value)
+
+value = re.sub(
+    r"(запись .*? впервые появилась|"
+    r"впервые появилась на сайте|"
+    r"подписывайтесь на|читать далее|читайте также).*",
+    " ",
+    value,
+    flags=re.IGNORECASE,
+)
+
+return re.sub(r"\s+", " ", value).strip()
+def _parse_date(entry: Any) -> datetime | None:
+for key in (
+"published_parsed",
+"updated_parsed",
+"created_parsed",
+):
+value = entry.get(key)
+
+    if value:
+        import calendar
+
+        return datetime.fromtimestamp(
+            calendar.timegm(value),
+            tz=timezone.utc,
+        )
+
 return None
+def _normalise(text: str) -> str:
+text = html.unescape(text or "").casefold()
+return re.sub(
+r"[^\w\s]",
+" ",
+text,
+flags=re.UNICODE,
+)
 
-def render_slides(carousel: dict[str, Any], item: dict[str, Any]) -> list[str]:
-out_dir = ROOT / "site/media"
-out_dir.mkdir(parents=True, exist_ok=True)
+def _contains_any(text: str, terms: list[str]) -> bool:
+text = text.casefold()
+return any(
+term.casefold() in text
+for term in terms
+)
 
-slug = re.sub(r"[^a-z0-9]+", "-", item["id"].lower()).strip("-")
-photo = _load_photo(item.get("image_url"))
-paths = []
+def _relevant(
+item: dict[str, Any],
+config: dict[str, Any],
+) -> bool:
 
-slides = carousel.get("slides", [])
+title = item["title"].casefold()
+summary = item["summary"].casefold()
+text = f"{title} {summary}"
 
-for index, text in enumerate(slides, start=1):
-    if photo:
-        image = ImageOps.fit(photo, (1080, 1350))
-        image = image.convert("RGBA")
-        overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-        overlay_draw = ImageDraw.Draw(overlay)
-        overlay_draw.rectangle(
-            (0, 650, 1080, 1350),
-            fill=(0, 0, 0, 175)
+topic_terms = [
+    "дтп",
+    "авари",
+    "столкнов",
+    "сбил",
+    "сбит",
+    "наезд",
+    "погиб",
+    "пострад",
+    "водител",
+    "автомоб",
+    "машин",
+    "такси",
+    "транспорт",
+    "автобус",
+    "маршрут",
+    "грузов",
+    "фур",
+    "трасс",
+    "дорог",
+    "дорожн",
+    "движен",
+    "перекрыт",
+    "пробк",
+    "гаи",
+    "пдд",
+    "штраф",
+    "топлив",
+    "бензин",
+    "дизел",
+    "электромоб",
+    "зарядн",
+    "автосалон",
+    "автосервис",
+    "запчаст",
+    "шина",
+    "парков",
+    "светофор",
+]
+
+region_terms = [
+    "таджикистан",
+    "таджик",
+    "душанбе",
+    "худжанд",
+    "бохтар",
+    "куляб",
+    "кулоб",
+    "хорог",
+    "гиссар",
+    "ҳисор",
+    "вахдат",
+    "согд",
+    "хатлон",
+    "гбао",
+    "памир",
+    "чанак",
+]
+
+if not _contains_any(text, topic_terms):
+    return False
+
+if not _contains_any(text, region_terms):
+    return False
+
+title_has_topic = _contains_any(
+    title,
+    topic_terms,
+)
+
+if not title_has_topic:
+    strong_terms = [
+        "дтп",
+        "авари",
+        "столкнов",
+        "сбил",
+        "сбит",
+        "наезд",
+        "дорог",
+        "дорожн",
+        "движен",
+        "перекрыт",
+        "такси",
+        "автомоб",
+        "машин",
+        "водител",
+        "транспорт",
+        "электромоб",
+        "бензин",
+        "топлив",
+    ]
+
+    if not _contains_any(text, strong_terms):
+        return False
+
+return True
+def _dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+seen_links: set[str] = set()
+seen_words: list[set[str]] = []
+result = []
+
+for item in items:
+    link = item["link"].split("#", 1)[0].rstrip("/")
+
+    if link in seen_links:
+        continue
+
+    words = set(_normalise(item["title"]).split())
+
+    if words and any(
+        len(words & prior) / max(1, len(words | prior)) >= 0.72
+        for prior in seen_words
+    ):
+        continue
+
+    seen_links.add(link)
+    seen_words.append(words)
+    item["link"] = link
+    result.append(item)
+
+return result
+def collect_news(
+config: dict[str, Any] | None = None,
+posted: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+
+config = config or load_config()
+
+if posted is None:
+    posted = json.loads(
+        (ROOT / "state/posted.json").read_text(
+            encoding="utf-8"
         )
-        image = Image.alpha_composite(image, overlay).convert("RGB")
-    else:
-        image = Image.new("RGB", (1080, 1350), (12, 25, 48))
-
-    draw = ImageDraw.Draw(image)
-
-    draw.text(
-        (70, 80),
-        "ТАЖИКИСТАН · АВТО И ДОРОГИ",
-        font=_font(30),
-        fill=(125, 211, 252),
     )
 
-    font_size = 66
-    while font_size > 34:
-        font = _font(font_size)
-        lines = _wrap(draw, text, font, 900)
-        height = len(lines) * int(font_size * 1.3)
-        if height <= 570:
-            break
-        font_size -= 3
+known = {
+    row.get("link", "").split("#", 1)[0].rstrip("/")
+    for row in posted
+}
 
-    y = max(700, 1250 - height - 100)
+cutoff = datetime.now(timezone.utc) - timedelta(
+    hours=int(config["lookback_hours"])
+)
 
-    for line in lines:
-        draw.text(
-            (75, y),
-            line,
-            font=font,
-            fill=(255, 255, 255),
-            stroke_width=2,
-            stroke_fill=(0, 0, 0),
+candidates: list[dict[str, Any]] = []
+
+for feed in config["feeds"]:
+    try:
+        parsed = feedparser.parse(
+            feed["url"],
+            request_headers={
+                "User-Agent": "TajikistanRoadNewsBot/1.0"
+            },
         )
-        y += int(font_size * 1.3)
 
-    draw.text(
-        (75, 1280),
-        f"{index}/{len(slides)}",
-        font=_font(28),
-        fill=(125, 211, 252),
+        if parsed.bozo and not parsed.entries:
+            log.warning(
+                "Не удалось прочитать RSS %s: %s",
+                feed["name"],
+                parsed.bozo_exception,
+            )
+            continue
+
+        for entry in parsed.entries:
+            published = _parse_date(entry)
+
+            title = _clean_html(
+                entry.get("title", "")
+            )
+
+            link = entry.get("link", "").strip()
+
+            summary = _clean_html(
+                entry.get(
+                    "summary",
+                    entry.get("description", ""),
+                )
+            )[:1500]
+
+            if not title or not link or not published:
+                continue
+
+            if published < cutoff:
+                continue
+
+            item = {
+                "title": title,
+                "summary": summary,
+                "link": link,
+                "source": feed["name"],
+                "published": published.isoformat(),
+            }
+
+            clean_link = (
+                link.split("#", 1)[0].rstrip("/")
+            )
+
+            if clean_link in known:
+                continue
+
+            if not _relevant(item, config):
+                continue
+
+            item["id"] = hashlib.sha256(
+                clean_link.encode()
+            ).hexdigest()[:16]
+
+            candidates.append(item)
+
+    except Exception as exc:
+        log.warning(
+            "Ошибка RSS %s: %s",
+            feed["name"],
+            exc,
+        )
+
+candidates.sort(
+    key=lambda row: row["published"],
+    reverse=True,
+)
+
+result = _dedupe(candidates)
+
+log.info(
+    "Найдено подходящих новостей: %d",
+    len(result),
+)
+
+for item in result:
+    log.info(
+        "Подходящая новость: [%s] %s",
+        item["source"],
+        item["title"],
     )
 
-    path = out_dir / f"{slug}-{index}.jpg"
-    image.save(path, "JPEG", quality=92, optimize=True)
-    paths.append(path.name)
-
-return paths
+return result[: int(config["posts_per_run"])]
