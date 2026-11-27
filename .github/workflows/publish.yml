@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "40 15 * * *"
-   
 
 permissions:
   actions: read
@@ -43,6 +42,14 @@ jobs:
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
         run: python run_bot.py --dry-run
 
+      - name: Verify images were generated
+        run: |
+          test -n "$(find site/media -maxdepth 1 -type f -name '*.jpg' -print -quit)" || {
+            echo "No carousel JPG files were generated" >&2
+            exit 1
+          }
+          find site/media -maxdepth 1 -type f -name '*.jpg' -print
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
@@ -51,6 +58,38 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Verify images are available on Pages
+        env:
+          PAGES_BASE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import time
+          import urllib.error
+          import urllib.request
+
+          base = os.environ["PAGES_BASE_URL"].rstrip("/")
+          images = sorted(pathlib.Path("site/media").glob("*.jpg"))
+          if not images:
+              raise SystemExit("No generated JPG images found")
+          for image in images:
+              url = f"{base}/media/{image.name}"
+              for attempt in range(12):
+                  try:
+                      request = urllib.request.Request(url, method="HEAD")
+                      with urllib.request.urlopen(request, timeout=20) as response:
+                          content_type = response.headers.get("Content-Type", "")
+                          if response.status == 200 and content_type.startswith("image/"):
+                              print(f"OK {url} ({content_type})")
+                              break
+                          raise RuntimeError(f"Unexpected response {response.status} {content_type}")
+                  except (urllib.error.URLError, TimeoutError, RuntimeError) as error:
+                      if attempt == 11:
+                          raise SystemExit(f"Pages image not ready: {url}: {error}")
+                      time.sleep(10)
+          PY
 
       - name: Publish carousel to Instagram
         env:
