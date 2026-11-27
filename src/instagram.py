@@ -54,4 +54,3 @@ def publish_carousel(paths: list[str], caption: str, pages_url: str) -> str:
         raise InstagramError("Instagram не завершил обработку карусели за минуту")
     published = _post(f"{user_id}/media_publish", {"creation_id": creation_id}, token)
     return published["id"]
-
