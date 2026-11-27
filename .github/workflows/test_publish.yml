@@ -30,7 +30,7 @@ jobs:
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
-          IG_API_VERSION: "v23.0"
+          IG_API_VERSION: "v27.0"
         run: |
           python - <<'PY'
           import os, sys, time, subprocess
