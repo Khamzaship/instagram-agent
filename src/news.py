@@ -160,6 +160,28 @@ def _atom_link(entry: ET.Element) -> str:
     return fallback
 
 
+IMG_EXT = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def _find_image(el: ET.Element, html_text: str = "") -> str:
+    """Ищет адрес фото записи: enclosure, media:content/thumbnail, первый <img>."""
+    for child in el:
+        name, a = _local(child.tag), child.attrib
+        url = a.get("url") or a.get("href") or ""
+        ext_ok = url.lower().split("?")[0].endswith(IMG_EXT)
+        if name == "enclosure" and url and (a.get("type", "").startswith("image") or ext_ok):
+            return url
+        if name == "link" and a.get("rel") == "enclosure" and a.get("type", "").startswith("image"):
+            return url
+        if name in ("content", "thumbnail") and a.get("url") and (
+            name == "thumbnail" or a.get("medium") == "image"
+            or a.get("type", "").startswith("image") or ext_ok
+        ):
+            return a["url"]
+    m = re.search(r"<img[^>]+src=[\"']([^\"']+)[\"']", html_text or "", re.IGNORECASE)
+    return html.unescape(m.group(1)) if m else ""
+
+
 def parse_feed(data: bytes) -> tuple[str, list[dict[str, Any]]]:
     """Возвращает (название_ленты, записи). Понимает RSS 2.0 и Atom."""
     root = ET.fromstring(data)
@@ -175,6 +197,7 @@ def parse_feed(data: bytes) -> tuple[str, list[dict[str, Any]]]:
                 "link": _atom_link(entry),
                 "summary": _child_text(entry, "summary") or _child_text(entry, "content"),
                 "date": _parse_date(_child_text(entry, "published", "updated")),
+                "image": _find_image(entry, _child_text(entry, "content") or _child_text(entry, "summary")),
             })
     else:                                                # RSS
         channel = next((c for c in root if _local(c.tag) == "channel"), root)
@@ -187,6 +210,7 @@ def parse_feed(data: bytes) -> tuple[str, list[dict[str, Any]]]:
                 "link": _child_text(item, "link"),
                 "summary": _child_text(item, "description") or _child_text(item, "encoded"),
                 "date": _parse_date(_child_text(item, "pubdate", "date", "published", "updated")),
+                "image": _find_image(item, (_child_text(item, "encoded") or "") + (_child_text(item, "description") or "")),
             })
     return title, items
 
@@ -255,7 +279,8 @@ def collect_news(config: dict[str, Any], posted: Any) -> list[dict[str, Any]]:
             on_topic += 1
             candidates.append({
                 "id": _make_id(link), "title": title, "summary": summary, "link": link,
-                "source": source, "published": when.isoformat(), "_score": score, "_when": when,
+                "source": source, "published": when.isoformat(), "image": (e.get("image") or "").strip(),
+                "_score": score, "_when": when,
             })
         logging.info("Лента %s: записей %d, свежих %d, по теме %d", source, len(entries), fresh, on_topic)
 
