@@ -3,7 +3,7 @@ name: Instagram news bot
 on:
   workflow_dispatch:
   schedule:
-    - cron: "40 15 * * *"
+        - cron: "0 10 * * *"
 
 permissions:
   actions: read
